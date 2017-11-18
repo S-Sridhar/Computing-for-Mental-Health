@@ -1,0 +1,161 @@
+---
+title: "Computing for Mental Health: Researcher Interface Analysis"
+author: "Subashini Sridhar, Isha Raut"
+date: "April 21, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(readr)
+```
+
+### The Computing for Mental Health Inferface Can be Accessed at:
+https://rautey.shinyapps.io/mental_health_interface/
+
+### Data Import and Wrangling
+
+The pivot dataset consists of 207 observations, indicating the 207 mental health diagnoses as determined by the DSM5 and represented by their diagnostic 'Code' in the dataset. The pivot dataset has 29 categories, indicating the 29 possible symptoms a diagnosis could have. If a symptom has a '1' it indicates that the patient should exhibit a symptom from this category to be diagnosed with the condition, and 0s indicated the symptom should not be present in a patient with this condition. These 0s and 1s are concatenated into a binary code, representing the category criteria
+assigned to each diagnosis. The pivot dataset also includes information on which chapter in the DSM5 each diagnosis could be found.
+
+```{r, message=FALSE, warning=FALSE}
+pivot <- read_csv("~/Smith/Spring2017/SDS235/mental-health-project/pivot.csv")
+#str(pivot)
+pivotMod <- pivot[-c(1, 2, 4)]
+pivotMod[sapply(pivotMod,is.integer)] <- lapply(pivotMod[sapply(pivotMod,is.integer)], as.factor)
+str(pivotMod)
+```
+
+```{r}
+#label the chapters and provide titles
+chapter_num <- c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19)
+chapter_title <- c("Neurodevelopmental Disorders", "Schizophrenia Spectrum and Other Psychotic Disorders", "Bipolar and Related Disorders", "Depressive Disorders", "Anxiety Disorders", "Obsessive-Compulsive and Related Disorders", "Trauma- and Stressor-Related Disorders", "Dissociative Disorders", "Somatic Symptom and Related Disorders", "Feeding and Eating Disorders", "Elimination Disorders", "Sleep-Wake Disorders", "Sexual Dysfunctions", "Gender Dysphoria", "Disruptive, Impulse-Control, and Conduct Disorders", "Substance-Related and Addictive Disorders", "Neurocognitive Disorders", "Personality Disorders", "Paraphilic Disorders")
+
+dsm5 <- data.frame(chapter_num,chapter_title)
+```
+
+###Fit a Conditional Inference Tree to Predict the Chapter of Diagnosis in DSM-5 based on given Symptoms 
+
+Fit a conditional inference tree using the ctree function in the party package to predict the chapter of the diagnosis based on the given symptoms.
+
+Conditional inference trees estimate a regression relationship by binary recursive partitioning in a conditional inference framework, and avoid variable selection bias.
+
+
+```{r, message=FALSE, warning=FALSE}
+library(party)
+cit <- ctree(Chapter~.,data=pivotMod)
+cit
+plot(cit)
+```
+
+###Fit a Classification Random Forest to Model the Chapter of a Diagnosis in DSM-5 based on given Symptoms 
+
+```{r, message=FALSE, warning=FALSE}
+library(randomForest)
+set.seed(1)
+rf <- randomForest(Chapter~., data = pivotMod, importance = TRUE)
+rf
+```
+
+Assess the accuracy and importance of each symptom in identifying the chapter
+```{r}
+#variable importance as measured by a Random Forest, indicates relative signficance of each symptom in classifying the chapter in terms of MeanDecreaseAccuracy and MeanDecreaseGini
+varImpPlot(rf)
+
+#Extracts the variable important measures produced by the randomForest
+importance(rf)
+```
+
+Transform the confusion matrix of the random forest into a dataframe in order to create visualizations that assess the classification error. 
+```{r, message = FALSE, warning=FALSE}
+misclass <- as.data.frame(rf$confusion)
+misclass <- add_rownames(misclass, "Chapter")
+#compute the number of diagnoses in each Chapter of the DSM5 as 
+misclass<- dplyr::mutate(misclass, Occurance = rowSums(misclass[2:20])) 
+#glimpse(misclass)
+misclass[sapply(misclass,is.character)] <- lapply(misclass[sapply(misclass,is.character)],as.factor)
+```
+
+#### Bar Plot of the Classification Error in Predicting each Chapter using the Random Forest Model
+```{r, message=FALSE, warning=FALSE}
+library(plotly)
+library(ggthemes)
+
+# First change factor levels
+misclass$Chapter <- factor(misclass$Chapter, levels = c("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19"))
+
+confusion_plot <- ggplot(misclass, aes(x = Chapter, y = class.error, text = paste("Chapter:", Chapter, "<br>", "Class Error:", class.error, "<br>", "Occurance:", Occurance))) + geom_bar(stat = "identity", aes(fill = Occurance)) + 
+  ylab("Class Error") + theme_classic() + scale_fill_continuous(name = "",
+                           breaks = c(5,10,15,20,25,30),
+                           labels = c(5,10,15,20,25,30),
+                           low = "lightblue", high = "purple")
+
+confusion_plot <- ggplotly(confusion_plot, tooltip = c("text"))
+
+confusion_plot
+```
+The height of each bar in the plot shows the error rate for each chapter. The bars are colored by the number of occurrences of the chapter in the pivotMod file, essentially the number of diagnoses in each chapter. According to the legend on the right, chapters with fewer occurrences in the pivot file are in light blue and those with more are in darker purple.
+
+Transform the variance importance plot of the random forest into a dataframe in order to create visualizations that assess the mean decrease in accuracy.
+```{r, message=FALSE, warning=FALSE}
+#variable importance-mean decrease in accuracy of symptoms in random forest
+mean_dec_acc <- as.data.frame(importance(rf, type = 1))
+mean_dec_acc <- add_rownames(mean_dec_acc, "Symptom")
+mean_dec_acc <- arrange(mean_dec_acc, desc(MeanDecreaseAccuracy))
+```
+
+#### Bar Plot of the Mean Decrease in Accuracy in Predicting each Chapter using the Random Forest Model
+```{r, message=FALSE, warning=FALSE}
+varImp_plot <- ggplot(mean_dec_acc, aes(x = reorder(Symptom, -MeanDecreaseAccuracy), y = MeanDecreaseAccuracy, text = paste("Symptom:", Symptom, "<br>", "Mean Decrease in Accuracy:", MeanDecreaseAccuracy))) + 
+  geom_bar(stat = "identity",  fill = I("skyblue")) + xlab("Symptom") + 
+  ylab("Mean Decrease in Accuracy") + ggtitle("Variable Importance for Random Forest") +
+  theme_classic() +  
+  coord_flip() 
+
+varImp_plot <- ggplotly(varImp_plot, tooltip = c("text"))
+  
+varImp_plot
+```
+The barplot shows the variable importance for the random forest as measured by the mean decrease in accuracy. Hovering over a bar provides the symptom and the value for mean decrease in accuracy. This plot shows how important the symptoms are in classifying the chapters; thus, the symptoms in the plot are ordered in ascending order based on their mean decrease in accuracy. The symptoms with the smallest values for mean decrease in accuracy are the most important classifiers of the chapters.
+
+
+#### Create a Heatmap to Indicate the Importance of each Symptom in Classifying the Chapter according the Random Forest Model
+```{r, message=FALSE, warning=FALSE}
+library(heatmaply)
+#transform the results from the confusion matrix of the randomforest into a daframe
+var_imp<- as.data.frame(importance(rf))
+
+#project the results of the confusion matrix of the random forest onto a heat map
+varchap <- select(var_imp, -MeanDecreaseAccuracy,-MeanDecreaseGini)
+heatmaply(varchap, k_col = 2, k_row = 3) %>% layout(margin = list(l = 130, b = 40))
+```
+The chapter numbers are along x-axis and the symptoms are labeled on the y-axis of the heat map. A legend on the right has a continuous color scale. The intensity increases from blue to yellow, while the corresponding values increase from 0 to 30. Upon hovering over a square on the heat map, the user can see the symptom, chapter, and value of importance of the symptom to the chapter.
+
+
+### Identify the Non-Distinguishable Diagnoses per Chapter in the Dataset
+
+RepeatChapters.py looks through the pivot.csv file, which contains all the diagnoses and whether or not each of the 40 categories of symptoms must be present in order to make each diagnosis (represented by the binary code). The Python program next collects all of the diagnoses with the same binary code, or those diagnoses that our decision tree would be unable to differentiate, and puts them in a dictionary. For each DSM-5 chapter, RepeatChapters.py counts the number of times diagnoses from that chapter appear in the non-distinguishable diagnoses dictionary. These results are written out to outputfile.csv.
+
+Collected all diagnostic codes with the same binary code for symptoms and
+grouped them by chapter.
+
+#### Bar Plot of the number of non-distinguishable diagnosesper Chapter.
+```{r, message=FALSE, warning=FALSE}
+chapFreq <- read_csv("~/Smith/Spring2017/SDS235/mental-health-project/outputfile.csv")
+#glimpse(chapFreq)
+chapFreq$Chapter <- as.factor(chapFreq$Chapter)
+
+chapFreq_plot <- ggplot(chapFreq, aes(x = Chapter, y = Frequency, text = paste("Chapter:", Chapter, "<br>", "Number of Non-distinguishable Diagnoses:", Frequency))) + geom_bar(stat = "identity", fill = I("skyblue")) + 
+theme_classic() + ylab("Number of Non-distinguishable Diagnoses per Chapter")
+
+chapFreq_plot <- ggplotly(chapFreq_plot, tooltip = c("text"))
+
+chapFreq_plot
+```
+
+Hovering over a bar provides the chapter number and the value for non-distinguishable diagnoses for the chapter. Diagnoses that have very similar symptom occurrences are almost non-separable to the computer.
+
